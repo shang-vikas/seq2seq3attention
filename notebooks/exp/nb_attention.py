@@ -132,3 +132,66 @@ def attention(q,k,v,msk=None,p=None):
         if p is not None:
             p_att = p(p_att)
         return torch.matmul(p_att,v), p_att
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self,h, d_model, p=0.1):
+        " Take in model size and number of heads."
+        super().__init__()
+        assert d_model % h ==0
+        ## assumption d_v always equals d_k
+        self.d_k = d_model // h; self.h = h; self.att = None; self.p = nn.Dropout(p=p)
+        self.linears = clones(nn.Linear(d_model,d_model), 4)
+
+    def forward(self,q,k,v,msk=None):
+        'Implements figure 2'
+        if msk is not None:
+            # same mask for all heads? - Why
+            msk = msk[:,None,...]
+        nbtch = q.size(0)
+        # 1. Do all the linear projections in batch  from d_model => h x d_k
+        q,k,v = [l(x).view(nbtch,-1,self.h,self.d_k).transpose(1,2)
+                for l,x in zip(self.linears,(q,k,v))]
+        # 2. Apply attention to all the projected vectors in batch.
+        x,self.att = attention(q,k,v,mask=mask,p=self.p)
+        # 3.'Concat' using a view and apply a final linear.
+        x = x.transpose(1,2).contigous().view(nbtch,-1,self.h*self.d_k)
+        return self.linears[-1](x)
+
+class BasicFC(nn.Module):
+    ''' Base FC to apply at the end of each encoder-decoder block '''
+    def __init__(self,d_model,d_h,p=0.1):
+        super().__init__()
+        self.w_1 = nn.Linear(d_model,d_h)
+        self.w_2 = nn.Linear(d_h,d_model)
+        self.p = nn.Dropout(p)
+
+    def forward(self,x):
+        return self.w_2(self.p(F.relu(self.w_1(x))))
+
+
+class Embeddings(nn.Module):
+    def __init__(self,d_model,vocab):
+        super().__init__()
+        self.lidx = nn.Embedding(d_model,vocab)
+        self.d_model = d_model
+
+    def forward(self,x):
+        return self.lut(x)*math.sqrt(self.d_model)
+
+class PositionalEncoding(nn.Module):
+    def __init__(self,d_model,p,max_len=5000):
+        super().__init__()
+        self.p = nn.Dropout(p)
+        # compute the poisitional encodings in log space
+        pe = torch.zeros(max_len,d_model)
+        position = torch.arange(0,max_len).unsqueeze(1).float()
+        div_term = torch.exp(torch.arange(0.,d_model,2)* -(math.log(1000.0)/d_model))
+#         breakpoint()
+        pe[:,0::2] = torch.sin(position * div_term).float()
+        pe[:,1::2] = torch.cos(position * div_term).float()
+        pe = pe[None]
+        self.register_buffer('pe',pe)
+    def forward(self,x):
+        x  = x + torch.tensor(self.pe[:,x.size(1)])
+        return self.p(x)
+
